@@ -39,7 +39,7 @@ class KeyboardEvent(object):
         return json.dumps(attrs, ensure_ascii=ensure_ascii)
 
     def __repr__(self):
-        return 'KeyboardEvent({} {})'.format(self.name or 'Unknown {}'.format(self.scan_code), self.event_type)
+        return 'KeyboardEvent({} {} from {})'.format(self.name or 'Unknown {}'.format(self.scan_code), self.event_type, self.device)
 
     def __eq__(self, other):
         return (
