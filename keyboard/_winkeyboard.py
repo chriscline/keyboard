@@ -674,11 +674,10 @@ def _start_intercept():
     Starts pumping Windows messages, which invokes the registered low
     level keyboard hook and raw input device capture.
     """
-    prepare_intercept(callback)
-    msg = LPMSG()
-    while not GetMessage(msg, 0, 0, 0):
-        TranslateMessage(msg)
-        DispatchMessage(msg)
+    msg = MSG()
+    while GetMessage(byref(msg), 0, 0, 0):
+        user32.TranslateMessage(byref(msg));
+        user32.DispatchMessageA(byref(msg));
 
 def listen(queue, is_allowed=lambda *args: True):
     # Low Level Keyboard hooks don't include device information. Raw Input Device
@@ -701,14 +700,12 @@ def listen(queue, is_allowed=lambda *args: True):
     def pair_events():
         while True:
             print('{} {}'.format(low_level_events.get().scan_code, raw_device_events.get().data.keyboard.scan_code))
-            continue
             low_level_event = low_level_events.get()
             while True:
                 raw_device_event = raw_device_events.get()
                 if low_level_event.scan_code == raw_device_event.data.keyboard.scan_code:
                     break
             low_level_event.device = raw_device_event.header.hDevice
-            queue.put(low_level_event)
     pairer = Thread(target=pair_events)
     pairer.daemon = True
     pairer.start()
