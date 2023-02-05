@@ -664,6 +664,7 @@ def prepare_intercept(callback):
     handle =  GetModuleHandleW(None)
     thread_id = DWORD(0)
     keyboard_hook = SetWindowsHookEx(WH_KEYBOARD_LL, keyboard_callback, handle, thread_id)
+    assert keyboard_hook is not None
 
     # Register to remove the hook when the interpreter exits. Unfortunately a
     # try/finally block doesn't seem to work here.
@@ -679,7 +680,7 @@ def _start_intercept():
         user32.TranslateMessage(byref(msg));
         user32.DispatchMessageA(byref(msg));
 
-def listen(queue, is_allowed=lambda *args: True):
+def listen(callback):
     # Low Level Keyboard hooks don't include device information. Raw Input Device
     # listeners do, but they don't allow for blocking events. To combine both, we
     # run a listener of each. Low level hook events are processed first (unknown
@@ -697,15 +698,35 @@ def listen(queue, is_allowed=lambda *args: True):
     low_level_events = Queue()
     raw_device_events = Queue()
 
+    if isinstance(callback, tuple):
+        # assume input is actually two callbacks,
+        #  the first of which returns a decision on whether to not block the event
+        #  and the second which (after some delay) receives an event with device ID included.
+        # note that if the callback is blocked, the later callback will never be called
+        #  (since a blocked low-level keyboard event never generates a corresponding hook event)
+        callback_do_not_block = callback[0]
+        callback_final = callback[1]
+    else:
+        # if only one callback, assume we will never block and do want device ID
+        callback_do_not_block = lambda *args: True
+        callback_final = callback
+    
     def pair_events():
         while True:
-            print('{} {}'.format(low_level_events.get().scan_code, raw_device_events.get().data.keyboard.scan_code))
+            # print('{} {}'.format(low_level_events.get().scan_code, raw_device_events.get().data.keyboard.scan_code))
             low_level_event = low_level_events.get()
             while True:
                 raw_device_event = raw_device_events.get()
-                if low_level_event.scan_code == raw_device_event.data.keyboard.scan_code:
-                    break
-            low_level_event.device = raw_device_event.header.hDevice
+                if isinstance(raw_device_event, KeyboardEvent):
+                    # actually a low_level_event, indicating there won't be a matching raw_device_event due to it being blocked
+                    if low_level_event.scan_code == raw_device_event.scan_code:
+                        low_level_event.device = None
+                        break
+                else:
+                    if low_level_event.scan_code == raw_device_event.data.keyboard.scan_code:
+                        low_level_event.device = raw_device_event.header.hDevice
+                        break
+            callback_final(low_level_event)
     pairer = Thread(target=pair_events)
     pairer.daemon = True
     pairer.start()
@@ -714,7 +735,12 @@ def listen(queue, is_allowed=lambda *args: True):
 
     def put_keyboard_event(event):
         low_level_events.put(event)
-        return is_allowed(event.name, event.event_type == KEY_UP)
+        isAllowed = callback_do_not_block(event)
+        if not isAllowed:
+            # blocking event will cause corresponding raw_device_event to never be generated, so put this event instead
+            raw_device_events.put(event)
+        # print(f'{event.name} {event.scan_code} isAllowed: {isAllowed}')
+        return isAllowed
     prepare_intercept(put_keyboard_event)
     _start_intercept()
 

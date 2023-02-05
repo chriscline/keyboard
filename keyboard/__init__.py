@@ -337,7 +337,7 @@ class _KeyboardListener(_GenericListener):
 
         return event.scan_code or (event.name and event.name != 'unknown')
 
-    def direct_callback(self, event):
+    def direct_callback(self, event, finalized: bool = True):
         """
         This function is called for every OS keyboard event and decides if the
         event should be blocked or not, and passes a copy of the event to
@@ -351,31 +351,43 @@ class _KeyboardListener(_GenericListener):
         if self.is_replaying:
             return True
 
-        if not all(hook(event) for hook in self.blocking_hooks):
-            return False
+        for hook in self.blocking_hooks:
+            if isinstance(hook, tuple):
+                if not hook[1 if finalized else 0](event):
+                    return False
+            else:
+                if not finalized or not hook(event):
+                    # if separate pre-finalized callback is not provided, assume must block
+                    return False
 
         event_type = event.event_type
         scan_code = event.scan_code
 
         # Update tables of currently pressed keys and modifiers.
-        with _pressed_events_lock:
-            if event_type == KEY_DOWN:
-                if is_modifier(scan_code): self.active_modifiers.add(scan_code)
-                _pressed_events[scan_code] = event
-            hotkey = tuple(sorted(_pressed_events))
-            if event_type == KEY_UP:
-                self.active_modifiers.discard(scan_code)
-                if scan_code in _pressed_events: del _pressed_events[scan_code]
+        if finalized:
+            with _pressed_events_lock:
+                if event_type == KEY_DOWN:
+                    if is_modifier(scan_code): self.active_modifiers.add(scan_code)
+                    _pressed_events[scan_code] = event
+                hotkey = tuple(sorted(_pressed_events))
+                if event_type == KEY_UP:
+                    self.active_modifiers.discard(scan_code)
+                    if scan_code in _pressed_events: del _pressed_events[scan_code]
 
         # Mappings based on individual keys instead of hotkeys.
         for key_hook in self.blocking_keys[scan_code]:
-            if not key_hook(event):
-                return False
+            if isinstance(key_hook, tuple):
+                if not key_hook[1 if finalized else 0](event):
+                    return False
+            else:
+                if not finalized or not key_hook(event):
+                    # if separate pre-finalized callback is not provided, assume must block
+                    return False
 
         # Default accept.
         accept = True
 
-        if self.blocking_hotkeys:
+        if self.blocking_hotkeys and finalized:
             if self.filtered_modifiers[scan_code]:
                 origin = 'modifier'
                 modifiers_to_update = set([scan_code])
@@ -397,19 +409,27 @@ class _KeyboardListener(_GenericListener):
                 if new_accept is not None: accept = new_accept
                 self.modifier_states[key] = new_state
 
-        if accept:
+        if accept and finalized:
             if event_type == KEY_DOWN:
                 _logically_pressed_keys[scan_code] = event
             elif event_type == KEY_UP and scan_code in _logically_pressed_keys:
                 del _logically_pressed_keys[scan_code]
 
         # Queue for handlers that won't block the event.
-        self.queue.put(event)
+        if finalized:
+            self.queue.put(event)
 
         return accept
 
     def listen(self):
-        _os_keyboard.listen(self.direct_callback)
+        if _platform.system() == 'Windows':
+            # include two separate callbacks: one to decide whether to accept, and the other (potentially called later
+            # after including device info) to actually receive the event
+            _os_keyboard.listen((
+                lambda *args: self.direct_callback(*args, finalized=False),
+                lambda *args: self.direct_callback(*args, finalized=True)))
+        else:
+            _os_keyboard.listen(self.direct_callback)
 
 _listener = _KeyboardListener()
 
