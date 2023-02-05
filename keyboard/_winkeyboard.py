@@ -260,6 +260,8 @@ VkKeyScan.restype = c_short
 
 LLKHF_INJECTED = 0x00000010
 
+NULL = c_int(0)
+
 WM_INPUT = 0x00FF
 
 WM_KEYDOWN = 0x0100
